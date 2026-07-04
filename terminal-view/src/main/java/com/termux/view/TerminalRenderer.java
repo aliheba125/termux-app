@@ -161,7 +161,7 @@ public final class TerminalRenderer {
                         invertCursorTextColor = true;
                     }
                     drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun,
-                        lastRunStartIndex, charsSinceLastRun, measuredWidthForRun,
+                        lastRunStartIndex, charsSinceLastRun, lastRunStartIndex, charsSinceLastRun, measuredWidthForRun,
                         cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection, false);
                 }
                 measuredWidthForRun = 0.f;
@@ -190,7 +190,7 @@ public final class TerminalRenderer {
             invertCursorTextColor = true;
         }
         drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
-            measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection, false);
+            lastRunStartIndex, charsSinceLastRun, measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection, false);
     }
 
     /** Immutable visual layout of one bidi row, shared by rendering and hit-testing. */
@@ -349,14 +349,26 @@ public final class TerminalRenderer {
             final int lastVisualLogical = L.visualToLogical[segEnd - 1];
             final int segWidthColumns = L.cellVisualColumn[lastVisualLogical] + L.cellWidth[lastVisualLogical] - segStartVisualColumn;
             final int charStart = L.cellCharStart[minLogical];
-            final int charCount = L.cellCharStart[maxLogical] + L.cellCharCount[maxLogical] - charStart;
-            final float measuredWidth = mTextPaint.measureText(line, charStart, charCount);
+            final int charEnd = L.cellCharStart[maxLogical] + L.cellCharCount[maxLogical];
+            final int charCount = charEnd - charStart;
+
+            // Shaping context = the whole contiguous same-level run this segment belongs to, even when
+            // the segment was split by a cursor/selection/style boundary. Passing the full run as the
+            // context to drawTextRun keeps Arabic letters joined across those splits, while only the
+            // [charStart,charEnd) range is drawn. Verified on a real emulator: a mid-word cell drawn
+            // with full-run context renders its medial (joined) form at the correct position.
+            int runMinLogical = minLogical, runMaxLogical = maxLogical;
+            while (runMinLogical - 1 >= 0 && L.cellLevels[runMinLogical - 1] == level) runMinLogical--;
+            while (runMaxLogical + 1 < L.cellCount && L.cellLevels[runMaxLogical + 1] == level) runMaxLogical++;
+            final int ctxStart = L.cellCharStart[runMinLogical];
+            final int ctxEnd = L.cellCharStart[runMaxLogical] + L.cellCharCount[runMaxLogical];
+            final float measuredWidth = mTextPaint.getRunAdvance(line, charStart, charEnd, ctxStart, ctxEnd, rtl, charEnd);
 
             final int cursorColor = insideCursor ? palette[TextStyle.COLOR_INDEX_CURSOR] : 0;
             final boolean invertCursorTextColor = insideCursor && cursorShape == TerminalEmulator.TERMINAL_CURSOR_STYLE_BLOCK;
 
             drawTextRun(canvas, line, palette, heightOffset, segStartVisualColumn, segWidthColumns,
-                charStart, charCount, measuredWidth, cursorColor, cursorShape, style,
+                charStart, charCount, ctxStart, ctxEnd - ctxStart, measuredWidth, cursorColor, cursorShape, style,
                 reverseVideo || invertCursorTextColor || insideSelection, rtl);
 
             v = segEnd;
@@ -390,7 +402,8 @@ public final class TerminalRenderer {
     }
 
     private void drawTextRun(Canvas canvas, char[] text, int[] palette, float y, int startColumn, int runWidthColumns,
-                             int startCharIndex, int runWidthChars, float mes, int cursor, int cursorStyle,
+                             int startCharIndex, int runWidthChars, int contextCharIndex, int contextCharCount,
+                             float mes, int cursor, int cursorStyle,
                              long textStyle, boolean reverseVideo, boolean rtl) {
         int foreColor = TextStyle.decodeForeColor(textStyle);
         final int effect = TextStyle.decodeEffect(textStyle);
@@ -475,7 +488,7 @@ public final class TerminalRenderer {
             // The text alignment is the default Paint.Align.LEFT. The last-but-one argument is the
             // run direction: passing the resolved bidi direction lets the platform text engine shape
             // (contextually join) Arabic/Hebrew and lay the glyphs out right-to-left when needed.
-            canvas.drawTextRun(text, startCharIndex, runWidthChars, startCharIndex, runWidthChars, left, y - mFontLineSpacingAndAscent, rtl, mTextPaint);
+            canvas.drawTextRun(text, startCharIndex, runWidthChars, contextCharIndex, contextCharCount, left, y - mFontLineSpacingAndAscent, rtl, mTextPaint);
         }
 
         if (savedMatrix) canvas.restore();
