@@ -367,7 +367,10 @@ public final class TerminalRenderer {
 
         mes = mes / mFontWidth;
         boolean savedMatrix = false;
-        if (Math.abs(mes - runWidthColumns) > 0.01) {
+        // Guard against a zero/degenerate measured width (e.g. a run whose glyphs have no advance
+        // because they are missing from the font): scaling by runWidthColumns / mes would divide by
+        // ~0 and feed Infinity/NaN into canvas.scale(), silently corrupting the canvas matrix.
+        if (mes > 0.01f && Math.abs(mes - runWidthColumns) > 0.01) {
             canvas.save();
             canvas.scale(runWidthColumns / mes, 1.f);
             left *= mes / runWidthColumns;
