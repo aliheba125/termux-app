@@ -193,25 +193,49 @@ public final class TerminalRenderer {
             measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection, false);
     }
 
+    /** Immutable visual layout of one bidi row, shared by rendering and hit-testing. */
+    private static final class BidiLayout {
+        final int cellCount;
+        final int[] cellCharStart;      // index into line[] where each (logical) cell starts
+        final int[] cellCharCount;      // number of java chars (base + combining) in each cell
+        final int[] cellWidth;          // display columns occupied by each cell (1 or 2)
+        final int[] cellColumn;         // logical start column of each cell
+        final long[] cellStyle;         // style of each cell
+        final byte[] cellLevels;        // resolved bidi level per (logical) cell
+        final Integer[] visualToLogical; // visual order index -> logical cell index
+        final int[] cellVisualColumn;   // visual start column per (logical) cell
+
+        BidiLayout(int cellCount, int[] cellCharStart, int[] cellCharCount, int[] cellWidth,
+                   int[] cellColumn, long[] cellStyle, byte[] cellLevels, Integer[] visualToLogical,
+                   int[] cellVisualColumn) {
+            this.cellCount = cellCount;
+            this.cellCharStart = cellCharStart;
+            this.cellCharCount = cellCharCount;
+            this.cellWidth = cellWidth;
+            this.cellColumn = cellColumn;
+            this.cellStyle = cellStyle;
+            this.cellLevels = cellLevels;
+            this.visualToLogical = visualToLogical;
+            this.cellVisualColumn = cellVisualColumn;
+        }
+    }
+
     /**
-     * Bidirectional renderer for a single row that contains right-to-left text.
-     * <p/>
-     * The terminal buffer stores cells in logical (typing) order. We compute the visual (display)
-     * order with the Unicode Bidirectional Algorithm and draw each contiguous visual segment with
-     * the appropriate direction, letting {@link Canvas#drawTextRun} perform Arabic shaping.
+     * Compute the visual (display) order of a row using the Unicode Bidirectional Algorithm with an
+     * LTR paragraph base direction. Returns {@code null} when the row needs no reordering (the caller
+     * should then use the LTR fast path). Deliberately free of any {@link Canvas}/{@link Paint} state
+     * so the same result can drive both rendering and hit-testing.
      */
-    private void renderBidiLine(Canvas canvas, TerminalRow lineObject, int[] palette, float heightOffset,
-                                int columns, int charsUsedInLine, int cursorX, int cursorShape,
-                                int selx1, int selx2, boolean reverseVideo) {
+    private static BidiLayout computeBidiLayout(TerminalRow lineObject, int columns, int charsUsedInLine) {
         final char[] line = lineObject.mText;
 
         // 1. Decompose the row into cells (in logical/column order). A cell is one base code point plus
         //    any trailing combining marks, and it occupies wcwidth() columns (1 or 2).
-        final int[] cellCharStart = new int[columns];  // index into line[] where the cell starts
-        final int[] cellCharCount = new int[columns];  // number of java chars (base + combining) in the cell
-        final int[] cellWidth = new int[columns];       // display columns occupied (1 or 2)
-        final int[] cellColumn = new int[columns];      // logical start column of the cell
-        final long[] cellStyle = new long[columns];     // style of the cell
+        final int[] cellCharStart = new int[columns];
+        final int[] cellCharCount = new int[columns];
+        final int[] cellWidth = new int[columns];
+        final int[] cellColumn = new int[columns];
+        final long[] cellStyle = new long[columns];
         int cellCount = 0;
         {
             int idx = 0, col = 0;
@@ -235,16 +259,11 @@ public final class TerminalRenderer {
                 col += w;
             }
         }
-        if (cellCount == 0) return;
+        if (cellCount == 0) return null;
 
-        // 2. Run the bidi algorithm with an LTR paragraph base direction and derive a per-char level.
+        // 2. Run the bidi algorithm and derive a per-char level.
         final Bidi bidi = new Bidi(line, 0, null, 0, charsUsedInLine, Bidi.DIRECTION_LEFT_TO_RIGHT);
-        if (bidi.isLeftToRight()) {
-            // No actual RTL runs after resolution (e.g. isolated neutral chars) - use the fast path.
-            renderNormalLine(canvas, lineObject, palette, heightOffset, columns, charsUsedInLine,
-                cursorX, cursorShape, selx1, selx2, reverseVideo);
-            return;
-        }
+        if (bidi.isLeftToRight()) return null;
         final byte[] charLevel = new byte[charsUsedInLine];
         for (int r = 0, runs = bidi.getRunCount(); r < runs; r++) {
             final int s = bidi.getRunStart(r);
@@ -264,36 +283,56 @@ public final class TerminalRenderer {
 
         // 4. Assign a visual start column to each (logical) cell.
         final int[] cellVisualColumn = new int[cellCount];
-        {
-            int visCol = 0;
-            for (int v = 0; v < cellCount; v++) {
-                final int logical = visualToLogical[v];
-                cellVisualColumn[logical] = visCol;
-                visCol += cellWidth[logical];
-            }
+        int visCol = 0;
+        for (int v = 0; v < cellCount; v++) {
+            final int logical = visualToLogical[v];
+            cellVisualColumn[logical] = visCol;
+            visCol += cellWidth[logical];
         }
 
-        // 5. Walk the cells in visual order, grouping into segments that share style, direction,
-        //    cursor and selection state AND stay contiguous in logical order (so shaping is preserved),
-        //    then draw each segment.
+        return new BidiLayout(cellCount, cellCharStart, cellCharCount, cellWidth, cellColumn,
+            cellStyle, cellLevels, visualToLogical, cellVisualColumn);
+    }
+
+    /**
+     * Bidirectional renderer for a single row that contains right-to-left text.
+     * <p/>
+     * The terminal buffer stores cells in logical (typing) order. We compute the visual (display)
+     * order with the Unicode Bidirectional Algorithm and draw each contiguous visual segment with
+     * the appropriate direction, letting {@link Canvas#drawTextRun} perform Arabic shaping.
+     */
+    private void renderBidiLine(Canvas canvas, TerminalRow lineObject, int[] palette, float heightOffset,
+                                int columns, int charsUsedInLine, int cursorX, int cursorShape,
+                                int selx1, int selx2, boolean reverseVideo) {
+        final BidiLayout L = computeBidiLayout(lineObject, columns, charsUsedInLine);
+        if (L == null) {
+            // No actual RTL runs after resolution - use the identical LTR fast path.
+            renderNormalLine(canvas, lineObject, palette, heightOffset, columns, charsUsedInLine,
+                cursorX, cursorShape, selx1, selx2, reverseVideo);
+            return;
+        }
+        final char[] line = lineObject.mText;
+
+        // Walk the cells in visual order, grouping into segments that share style, direction, cursor
+        // and selection state AND stay contiguous in logical order (so shaping is preserved), then draw.
         int v = 0;
-        while (v < cellCount) {
-            final int firstLogical = visualToLogical[v];
-            final long style = cellStyle[firstLogical];
-            final byte level = cellLevels[firstLogical];
+        while (v < L.cellCount) {
+            final int firstLogical = L.visualToLogical[v];
+            final long style = L.cellStyle[firstLogical];
+            final byte level = L.cellLevels[firstLogical];
             final boolean rtl = (level & 1) != 0;
-            final boolean insideCursor = cellInsideCursor(cursorX, cellColumn[firstLogical], cellWidth[firstLogical]);
-            final boolean insideSelection = cellInsideSelection(selx1, selx2, cellColumn[firstLogical]);
+            final boolean insideCursor = cellInsideCursor(cursorX, L.cellColumn[firstLogical], L.cellWidth[firstLogical]);
+            final boolean insideSelection = cellInsideSelection(selx1, selx2, L.cellColumn[firstLogical]);
 
             int minLogical = firstLogical;
             int maxLogical = firstLogical;
             int segEnd = v + 1;
-            while (segEnd < cellCount) {
-                final int nextLogical = visualToLogical[segEnd];
-                if (cellStyle[nextLogical] != style
-                    || cellLevels[nextLogical] != level
-                    || cellInsideCursor(cursorX, cellColumn[nextLogical], cellWidth[nextLogical]) != insideCursor
-                    || cellInsideSelection(selx1, selx2, cellColumn[nextLogical]) != insideSelection)
+            while (segEnd < L.cellCount) {
+                final int nextLogical = L.visualToLogical[segEnd];
+                if (L.cellStyle[nextLogical] != style
+                    || L.cellLevels[nextLogical] != level
+                    || cellInsideCursor(cursorX, L.cellColumn[nextLogical], L.cellWidth[nextLogical]) != insideCursor
+                    || cellInsideSelection(selx1, selx2, L.cellColumn[nextLogical]) != insideSelection)
                     break;
                 // Require logical adjacency so the char range handed to drawTextRun stays contiguous.
                 if (rtl) {
@@ -306,11 +345,11 @@ public final class TerminalRenderer {
                 segEnd++;
             }
 
-            final int segStartVisualColumn = cellVisualColumn[visualToLogical[v]];
-            final int lastVisualLogical = visualToLogical[segEnd - 1];
-            final int segWidthColumns = cellVisualColumn[lastVisualLogical] + cellWidth[lastVisualLogical] - segStartVisualColumn;
-            final int charStart = cellCharStart[minLogical];
-            final int charCount = cellCharStart[maxLogical] + cellCharCount[maxLogical] - charStart;
+            final int segStartVisualColumn = L.cellVisualColumn[L.visualToLogical[v]];
+            final int lastVisualLogical = L.visualToLogical[segEnd - 1];
+            final int segWidthColumns = L.cellVisualColumn[lastVisualLogical] + L.cellWidth[lastVisualLogical] - segStartVisualColumn;
+            final int charStart = L.cellCharStart[minLogical];
+            final int charCount = L.cellCharStart[maxLogical] + L.cellCharCount[maxLogical] - charStart;
             final float measuredWidth = mTextPaint.measureText(line, charStart, charCount);
 
             final int cursorColor = insideCursor ? palette[TextStyle.COLOR_INDEX_CURSOR] : 0;
@@ -322,6 +361,24 @@ public final class TerminalRenderer {
 
             v = segEnd;
         }
+    }
+
+    /**
+     * Map a visual (on-screen) column to the logical buffer column for a row, inverting the bidi
+     * reordering. Returns {@code visualColumn} unchanged for rows that need no bidi. Used for
+     * hit-testing so touch text-selection on RTL lines selects the intended characters.
+     */
+    public int getLogicalColumn(TerminalRow lineObject, int columns, int visualColumn) {
+        if (visualColumn < 0 || visualColumn >= columns) return visualColumn;
+        final int charsUsedInLine = lineObject.getSpaceUsed();
+        if (charsUsedInLine <= 0 || !Bidi.requiresBidi(lineObject.mText, 0, charsUsedInLine)) return visualColumn;
+        final BidiLayout L = computeBidiLayout(lineObject, columns, charsUsedInLine);
+        if (L == null) return visualColumn;
+        for (int i = 0; i < L.cellCount; i++) {
+            final int vc = L.cellVisualColumn[i];
+            if (visualColumn >= vc && visualColumn < vc + L.cellWidth[i]) return L.cellColumn[i];
+        }
+        return visualColumn;
     }
 
     private static boolean cellInsideCursor(int cursorX, int cellColumn, int cellWidth) {
