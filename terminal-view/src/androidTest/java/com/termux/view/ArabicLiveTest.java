@@ -210,4 +210,42 @@ public class ArabicLiveTest {
         TerminalRow row3 = s3.allocateFullLineIfNecessary(s3.externalToInternalRow(0));
         for (int i = 0; i < 5; i++) assertEquals("english identity", i, r.getLogicalColumn(row3, 20, i));
     }
+
+    // ---- Test 4: cursor on a mid-word Arabic letter must NOT break the joining of its neighbours.
+    // We render مرحبا without a cursor and with the cursor on the middle letter, then compare pixels
+    // OUTSIDE the cursor cell. If joining is preserved (full-run shaping context) the neighbouring
+    // cells render identically; a broken renderer would draw them in isolated forms and differ a lot.
+    @Test
+    public void cursorPreservesNeighbourJoining() {
+        TerminalRenderer r = new TerminalRenderer(40, arabicFont());
+        TerminalEmulator noCur = emu(20, 2, "\u0645\u0631\u062D\u0628\u0627\u001b[?25l"); // hide cursor
+        TerminalEmulator cur = emu(20, 2, "\u0645\u0631\u062D\u0628\u0627\u001b[3G");      // cursor on logical col 2 (ح)
+        Bitmap a = renderScreen(noCur, r);
+        Bitmap b = renderScreen(cur, r);
+
+        // Find the VISUAL column that shows logical column 2 (the cursor cell).
+        TerminalBuffer s = cur.getScreen();
+        TerminalRow row = s.allocateFullLineIfNecessary(s.externalToInternalRow(0));
+        int cursorVisualCol = -1;
+        for (int v = 0; v < 20; v++) if (r.getLogicalColumn(row, 20, v) == 2) { cursorVisualCol = v; break; }
+        float fw = r.getFontWidth();
+        int cx0 = (int) (cursorVisualCol * fw) - 2, cx1 = (int) ((cursorVisualCol + 1) * fw) + 2;
+
+        int W = Math.min(a.getWidth(), b.getWidth()), H = Math.min(a.getHeight(), b.getHeight());
+        int diff = 0, tot = 0;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+            if (x >= cx0 && x < cx1) continue; // skip the cursor cell band (it is intentionally inverted)
+            int pa = a.getPixel(x, y) & 0xFF, pb = b.getPixel(x, y) & 0xFF;
+            tot++;
+            if (Math.abs(pa - pb) > 40) diff++;
+        }
+        double ratio = tot == 0 ? 0 : (double) diff / tot;
+        analyze(a, 0, r.getFontLineSpacing() + 6, "no_cursor", true);
+        analyze(b, 0, r.getFontLineSpacing() + 6, "cursor_midword", true);
+        Log.i(TAG, "cursorPreservesNeighbourJoining: cursorVisualCol=" + cursorVisualCol
+            + " diffRatioOutsideCursor=" + String.format("%.4f", ratio));
+        assertTrue("cursorVisualCol found", cursorVisualCol >= 0);
+        assertTrue("neighbours must render (near) identically with/without cursor => joining preserved (diff="
+            + String.format("%.4f", ratio) + ")", ratio < 0.03);
+    }
 }
