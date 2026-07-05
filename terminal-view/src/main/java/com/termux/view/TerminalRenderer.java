@@ -404,7 +404,12 @@ public final class TerminalRenderer {
     }
 
     private static boolean cellInsideSelection(int selx1, int selx2, int cellColumn) {
-        return selx1 >= 0 && cellColumn >= selx1 && cellColumn <= selx2;
+        // Mirror renderNormalLine's exact semantics: `column >= selx1 && column <= selx2`.
+        // For multi-line selections render() sets selx1 = -1 (sentinel meaning "from the start of the
+        // line") on the middle/last rows; the old `selx1 >= 0` guard wrongly treated that as "no
+        // selection", so an Arabic row inside a multi-line selection lost its highlight. A row that is
+        // NOT selected has selx2 = -1, which `cellColumn <= selx2` already excludes (cellColumn >= 0).
+        return cellColumn >= selx1 && cellColumn <= selx2;
     }
 
     private void drawTextRun(Canvas canvas, char[] text, int[] palette, float y, int startColumn, int runWidthColumns,
