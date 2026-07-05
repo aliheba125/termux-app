@@ -248,4 +248,61 @@ public class ArabicLiveTest {
         assertTrue("neighbours must render (near) identically with/without cursor => joining preserved (diff="
             + String.format("%.4f", ratio) + ")", ratio < 0.03);
     }
+
+    private Bitmap renderScreenSel(TerminalEmulator e, TerminalRenderer r, int selX1, int selX2) {
+        int cols = e.mColumns, rows = e.mRows;
+        int W = Math.max(1, (int) Math.ceil(r.getFontWidth() * cols) + 4);
+        int H = Math.max(1, r.getFontLineSpacing() * rows + 8);
+        Bitmap bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        c.drawColor(Color.BLACK);
+        r.render(e, c, 0, 0, 0, selX1, selX2); // selection on row 0, logical columns selX1..selX2
+        return bmp;
+    }
+
+    private static int[] inkVExtent(Bitmap b) {
+        int top = -1, bot = -1;
+        for (int y = 0; y < b.getHeight(); y++) {
+            boolean ink = false;
+            for (int x = 0; x < b.getWidth(); x++) if ((b.getPixel(x, y) & 0xFF) > 40) { ink = true; break; }
+            if (ink) { if (top < 0) top = y; bot = y; }
+        }
+        return new int[]{top, bot};
+    }
+
+    // ---- Diagnostics for the two device-reported issues: (1) Arabic looks bigger than Latin,
+    // (2) selection highlight not visible over Arabic. Uses MONOSPACE so Arabic falls back to the
+    // system font (the user's default scenario). Informational: logs measurements.
+    @Test
+    public void diagnostics_sizeAndSelection() {
+        TerminalRenderer r = new TerminalRenderer(40, Typeface.MONOSPACE);
+        int ls = r.getFontLineSpacing();
+
+        Bitmap latin = renderScreen(emu(20, 3, "HELLO"), r);
+        Bitmap arabic = renderScreen(emu(20, 3, "\u0645\u0631\u062D\u0628\u0627"), r);
+        int[] lv = inkVExtent(latin), av = inkVExtent(arabic);
+        int lh = lv[1] - lv[0], ah = av[1] - av[0];
+        Log.i(TAG, "SIZE lineSpacing=" + ls + " | latin inkH=" + lh + " [" + lv[0] + "," + lv[1] + "]"
+            + " | arabic inkH=" + ah + " [" + av[0] + "," + av[1] + "]"
+            + " | arabic/latin=" + String.format("%.2f", (double) ah / Math.max(1, lh))
+            + " | arabicOverflowsCell=" + (ah > ls));
+
+        for (String[] cse : new String[][]{{"latin", "hello"}, {"arabic", "\u0645\u0631\u062D\u0628\u0627"}}) {
+            Bitmap no = renderScreen(emu(20, 3, cse[1]), r);
+            Bitmap sel = renderScreenSel(emu(20, 3, cse[1]), r, 0, 4);
+            float fw = r.getFontWidth();
+            int xEnd = (int) (5 * fw), y1 = ls + 6;
+            long bNo = 0, bSel = 0; int tot = 0;
+            for (int y = 0; y < Math.min(y1, no.getHeight()); y++)
+                for (int x = 0; x < Math.min(xEnd, no.getWidth()); x++) {
+                    tot++;
+                    if ((no.getPixel(x, y) & 0xFF) > 128) bNo++;
+                    if ((sel.getPixel(x, y) & 0xFF) > 128) bSel++;
+                }
+            Log.i(TAG, "SELECTION " + cse[0] + " brightNoSel=" + bNo + " brightSel=" + bSel
+                + " highlightAdds=" + (bSel - bNo) + " tot=" + tot
+                + " => highlightVisible=" + ((bSel - bNo) > tot / 20));
+            analyze(sel, 0, y1, "sel_" + cse[0], true);
+        }
+    }
 }
