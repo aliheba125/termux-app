@@ -237,9 +237,10 @@ public class TextSelectionCursorController implements CursorController {
             if (mSelY1 > mSelY2) {
                 mSelY1 = mSelY2;
             }
-            if (mSelY1 == mSelY2 && mSelX1 > mSelX2) {
-                mSelX1 = mSelX2;
-            }
+            // Do NOT collapse when start>end on the same row: for RTL text a normal drag maps to a
+            // descending logical range. The range is normalized (min..max) where it is consumed
+            // (render highlight + getSelectedText), so the selection stays visible instead of
+            // collapsing to a single cell.
 
             if (!terminalView.mEmulator.isAlternateBufferActive()) {
                 int topRow = terminalView.getTopRow();
@@ -277,9 +278,8 @@ public class TextSelectionCursorController implements CursorController {
             if (mSelY1 > mSelY2) {
                 mSelY2 = mSelY1;
             }
-            if (mSelY1 == mSelY2 && mSelX1 > mSelX2) {
-                mSelX2 = mSelX1;
-            }
+            // Do NOT collapse when start>end on the same row (RTL): the range is normalized where it
+            // is consumed (render highlight + getSelectedText), keeping the selection visible.
 
             if (!terminalView.mEmulator.isAlternateBufferActive()) {
                 int topRow = terminalView.getTopRow();

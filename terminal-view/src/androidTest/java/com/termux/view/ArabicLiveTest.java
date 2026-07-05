@@ -316,6 +316,20 @@ public class ArabicLiveTest {
             + " highlightAdds=" + highlightAdds(e, r, word, Math.min(a, b), Math.max(a, b)));
     }
 
+    // Confirms the fix: an inverted (descending) selection range - as produced by an RTL drag -
+    // still highlights the full word because render() normalizes it.
+    @Test
+    public void renderNormalizesInvertedRtlSelection() {
+        TerminalRenderer r = new TerminalRenderer(40, Typeface.MONOSPACE);
+        String word = "\u0645\u0631\u062D\u0628\u0627";
+        long forward = highlightAdds(null, r, word, 0, 4);
+        long inverted = highlightAdds(null, r, word, 4, 0); // RTL descending range (start>end)
+        Log.i(TAG, "RENDER-NORM forward[0,4]=" + forward + " inverted[4,0]=" + inverted);
+        assertTrue("forward selection highlights", forward > 1000);
+        assertTrue("inverted RTL selection must still highlight (render normalizes), got " + inverted,
+            inverted > forward / 2);
+    }
+
     // ---- Diagnostics for the two device-reported issues: (1) Arabic looks bigger than Latin,
     // (2) selection highlight not visible over Arabic. Uses MONOSPACE so Arabic falls back to the
     // system font (the user's default scenario). Informational: logs measurements.
