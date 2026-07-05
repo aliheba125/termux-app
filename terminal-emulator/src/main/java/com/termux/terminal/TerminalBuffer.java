@@ -61,6 +61,13 @@ public final class TerminalBuffer {
         final StringBuilder builder = new StringBuilder();
         final int columns = mColumns;
 
+        // Normalize a single-row selection whose columns are descending. This happens for RTL text,
+        // where a left-to-right drag maps to a descending logical column range; without this the
+        // extracted (copied) text would be empty.
+        if (selY1 == selY2 && selX1 > selX2) {
+            int tmp = selX1; selX1 = selX2; selX2 = tmp;
+        }
+
         if (selY1 < -getActiveTranscriptRows()) selY1 = -getActiveTranscriptRows();
         if (selY2 >= mScreenRows) selY2 = mScreenRows - 1;
 
