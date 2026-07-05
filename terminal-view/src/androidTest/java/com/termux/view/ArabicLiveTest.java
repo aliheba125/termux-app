@@ -270,6 +270,52 @@ public class ArabicLiveTest {
         return new int[]{top, bot};
     }
 
+    private long highlightAdds(TerminalEmulator base, TerminalRenderer r, String text, int sx1, int sx2) {
+        Bitmap no = renderScreen(emu(20, 3, text), r);
+        Bitmap sel = renderScreenSel(emu(20, 3, text), r, sx1, sx2);
+        float fw = r.getFontWidth();
+        int xEnd = (int) (5 * fw), y1 = r.getFontLineSpacing() + 6;
+        long bNo = 0, bSel = 0;
+        for (int y = 0; y < Math.min(y1, no.getHeight()); y++)
+            for (int x = 0; x < Math.min(xEnd, no.getWidth()); x++) {
+                if ((no.getPixel(x, y) & 0xFF) > 128) bNo++;
+                if ((sel.getPixel(x, y) & 0xFF) > 128) bSel++;
+            }
+        return bSel - bNo;
+    }
+
+    // Reproduces the REAL selection flow (TextSelectionCursorController) for Arabic: how a long-press
+    // word-select and a left->right drag translate touch to the logical selection range, and whether
+    // that range actually produces a visible highlight. This is font-independent (pure logic), so it
+    // faithfully reproduces the device behaviour that the direct-range test bypassed.
+    @Test
+    public void selectionControllerFlowArabic() {
+        TerminalRenderer r = new TerminalRenderer(40, Typeface.MONOSPACE);
+        String word = "\u0645\u0631\u062D\u0628\u0627";
+        TerminalEmulator e = emu(20, 3, word);
+        TerminalBuffer s = e.getScreen();
+        TerminalRow row = s.allocateFullLineIfNecessary(s.externalToInternalRow(0));
+
+        // (1) long-press at visual middle -> setInitialTextSelectionPosition word expansion
+        int selX1 = r.getLogicalColumn(row, 20, 2), selX2 = selX1;
+        if (!" ".equals(s.getSelectedText(selX1, 0, selX1, 0))) {
+            while (selX1 > 0 && !"".equals(s.getSelectedText(selX1 - 1, 0, selX1 - 1, 0))) selX1--;
+            while (selX2 < 19 && !"".equals(s.getSelectedText(selX2 + 1, 0, selX2 + 1, 0))) selX2++;
+        }
+        Log.i(TAG, "CTRL longpress -> range=[" + selX1 + "," + selX2 + "] highlightAdds=" + highlightAdds(e, r, word, selX1, selX2));
+
+        // (2) drag: start handle at visual col 0, end handle at visual col 4
+        int a = r.getLogicalColumn(row, 20, 0), b = r.getLogicalColumn(row, 20, 4);
+        Log.i(TAG, "CTRL drag handles: startVis0->logical" + a + "  endVis4->logical" + b + "  (a>b means RTL inversion)");
+        // current controller behaviour: collapses when start>end on same row
+        int cCollapsed = (a > b) ? a : b; // end handle sets mSelX2=mSelX1 when a>b -> [a,a]
+        Log.i(TAG, "CTRL drag CURRENT(collapse) -> range=[" + Math.min(a, cCollapsed) + "," + Math.max(a, cCollapsed) + "]"
+            + " highlightAdds=" + highlightAdds(e, r, word, Math.min(a, cCollapsed), Math.max(a, cCollapsed)));
+        // proposed fix: normalize (min..max) instead of collapse
+        Log.i(TAG, "CTRL drag FIXED(normalize) -> range=[" + Math.min(a, b) + "," + Math.max(a, b) + "]"
+            + " highlightAdds=" + highlightAdds(e, r, word, Math.min(a, b), Math.max(a, b)));
+    }
+
     // ---- Diagnostics for the two device-reported issues: (1) Arabic looks bigger than Latin,
     // (2) selection highlight not visible over Arabic. Uses MONOSPACE so Arabic falls back to the
     // system font (the user's default scenario). Informational: logs measurements.
