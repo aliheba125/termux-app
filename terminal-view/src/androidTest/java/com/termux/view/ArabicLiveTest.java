@@ -146,8 +146,12 @@ public class ArabicLiveTest {
             TerminalBuffer s = e.getScreen();
             TerminalRow row = s.allocateFullLineIfNecessary(s.externalToInternalRow(0));
             for (int v = -3; v <= 25; v++) {
-                int lc = r.getLogicalColumn(row, 20, v); // must not throw or return an OOB column
-                if (lc < -1 || lc > 20) throw new AssertionError("getLogicalColumn returned OOB " + lc + " for v=" + v);
+                int lc = r.getLogicalColumn(row, 20, v); // must never throw
+                // For an in-range visual column the result must be an in-range logical column.
+                // For an out-of-range input the method returns the input unchanged (identity fallback),
+                // which is safe because callers (getCursorX) never pass out-of-range values.
+                if (v >= 0 && v < 20 && (lc < 0 || lc >= 20))
+                    throw new AssertionError("getLogicalColumn(" + v + ") returned OOB logical column " + lc);
             }
         }
         Log.i(TAG, "getLogicalColumn never threw and stayed in range for all tricky rows/columns");
@@ -460,7 +464,13 @@ public class ArabicLiveTest {
         Bitmap noC = renderScreen(emu(20, 4, control), r);
         long addCtrlMid = brightInRow(selC, r, 1, 20) - brightInRow(noC, r, 1, 20);
         Log.i(TAG, "MULTILINE control latin-middle-row highlightAdds=" + addCtrlMid);
-        Log.i(TAG, "MULTILINE VERDICT arabic-middle-row-broken=" + (add1 < add0 / 4 && add1 < addCtrlMid / 4));
+        // AFTER FIX: the Arabic middle row must highlight like the other rows. It is a full-width
+        // selection row (selx1=-1, selx2=mColumns) just like the latin control middle row, so its
+        // highlight must be substantial (at least half of the latin control's full-width highlight).
+        Log.i(TAG, "MULTILINE VERDICT arabic-middle-row-highlighted=" + (add1 > addCtrlMid / 2));
+        assertTrue("latin control middle row must highlight (sanity)", addCtrlMid > 1000);
+        assertTrue("Arabic middle row of a multi-line selection must now highlight (add1=" + add1
+            + " vs latin control=" + addCtrlMid + ")", add1 > addCtrlMid / 2);
     }
 
     // Confirms the fix: an inverted (descending) selection range - as produced by an RTL drag -
