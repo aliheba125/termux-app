@@ -92,8 +92,9 @@ public class TextSelectionCursorController implements CursorController {
 
     public void setInitialTextSelectionPosition(MotionEvent event) {
         int[] columnAndRow = terminalView.getColumnAndRow(event, true);
-        mSelX1 = mSelX2 = columnAndRow[0];
         mSelY1 = mSelY2 = columnAndRow[1];
+        // Convert the tapped visual column to the logical buffer column (RTL-aware).
+        mSelX1 = mSelX2 = terminalView.visualToLogicalColumn(mSelY1, columnAndRow[0]);
 
         TerminalBuffer screen = terminalView.mEmulator.getScreen();
         if (!" ".equals(screen.getSelectedText(mSelX1, mSelY1, mSelX1, mSelY1))) {
@@ -219,8 +220,8 @@ public class TextSelectionCursorController implements CursorController {
         TerminalBuffer screen = terminalView.mEmulator.getScreen();
         final int scrollRows = screen.getActiveRows() - terminalView.mEmulator.mRows;
         if (handle == mStartHandle) {
-            mSelX1 = terminalView.getCursorX(x);
             mSelY1 = terminalView.getCursorY(y);
+            mSelX1 = terminalView.visualToLogicalColumn(mSelY1, terminalView.getCursorX(x));
             if (mSelX1 < 0) {
                 mSelX1 = 0;
             }
@@ -261,8 +262,8 @@ public class TextSelectionCursorController implements CursorController {
             mSelX1 = getValidCurX(screen, mSelY1, mSelX1);
 
         } else {
-            mSelX2 = terminalView.getCursorX(x);
             mSelY2 = terminalView.getCursorY(y);
+            mSelX2 = terminalView.visualToLogicalColumn(mSelY2, terminalView.getCursorX(x));
             if (mSelX2 < 0) {
                 mSelX2 = 0;
             }

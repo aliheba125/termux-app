@@ -1039,6 +1039,23 @@ public final class TerminalView extends View {
         return (int) (((y - 40) / mRenderer.mFontLineSpacing) + mTopRow);
     }
 
+    /**
+     * Map a visual (on-screen) column on the given external buffer row to the logical buffer column,
+     * inverting bidirectional (RTL) reordering. Returns the column unchanged for rows without RTL
+     * text. Used so touch text-selection on Arabic/Hebrew lines selects the intended characters.
+     */
+    public int visualToLogicalColumn(int externalRow, int visualColumn) {
+        if (mEmulator == null || mRenderer == null || visualColumn < 0) return visualColumn;
+        try {
+            com.termux.terminal.TerminalBuffer screen = mEmulator.getScreen();
+            com.termux.terminal.TerminalRow row = screen.allocateFullLineIfNecessary(screen.externalToInternalRow(externalRow));
+            return mRenderer.getLogicalColumn(row, mEmulator.mColumns, visualColumn);
+        } catch (Throwable t) {
+            // Never let hit-testing crash selection; fall back to the identity mapping.
+            return visualColumn;
+        }
+    }
+
     public int getPointX(int cx) {
         if (cx > mEmulator.mColumns) {
             cx = mEmulator.mColumns;
