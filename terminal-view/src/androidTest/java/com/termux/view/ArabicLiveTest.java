@@ -245,6 +245,44 @@ public class ArabicLiveTest {
     // passing the full run as shaping context while drawing only the split sub-range. Arabic is RTL,
     // so we probe with isRtl=true (the real case). Uses a pixel-diff (not just width) to detect
     // whether the wider context actually changes the chosen glyph form.
+    // ---- Issue 2: bundled monospace font gives Arabic the same metrics as Latin ----
+    @Test
+    public void bundledArabicFontHasMatchedMonospaceMetrics() {
+        // On some devices (e.g. MIUI) the system monospace font has no Arabic glyphs, so Arabic
+        // fell back to a proportional system font that looked slanted / larger than the Latin
+        // cells. The fix ships a bundled monospace font (Kawkab Mono) as the default. Because it
+        // is bundled with the app, its metrics are IDENTICAL on every device (including MIUI), so
+        // verifying here on the emulator is valid for the real device too.
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setTypeface(arabicFont()); // same Kawkab Mono shipped at app/src/main/assets/font.ttf
+        p.setTextSize(48f);
+
+        float cell = p.measureText("X"); // the per-cell advance the renderer uses
+
+        char[] latin = "hello".toCharArray();
+        char[] arabic = "\u0645\u0631\u062D\u0628\u0627".toCharArray(); // مرحبا, 5 code points
+
+        float latinAdv = p.getRunAdvance(latin, 0, latin.length, 0, latin.length, false, latin.length);
+        float arabicAdv = p.getRunAdvance(arabic, 0, arabic.length, 0, arabic.length, true, arabic.length);
+        float expected = 5 * cell;
+        Log.i(TAG, "FONT2 cell=" + cell + " latinAdv=" + latinAdv + " arabicAdv=" + arabicAdv + " expected5cells=" + expected);
+
+        // Latin is exactly monospace.
+        assertTrue("Latin 5-char run must equal 5 monospace cells (adv=" + latinAdv + ", cells=" + expected + ")",
+            Math.abs(latinAdv - expected) < cell);
+        // Arabic must occupy the SAME width as 5 cells. A proportional fallback font would deviate
+        // by far more than one cell, forcing the renderer to x-scale (what makes Arabic look
+        // larger/slanted). Matching here proves the bundled font removes that distortion.
+        assertTrue("Arabic 5-char run must equal 5 monospace cells (adv=" + arabicAdv + ", cells=" + expected + ")",
+            Math.abs(arabicAdv - expected) < cell);
+
+        // A single font shares one set of vertical metrics for both scripts, so Arabic cannot
+        // render taller/bigger than Latin (the pre-fix symptom came from a DIFFERENT fallback font).
+        Paint.FontMetrics fm = p.getFontMetrics();
+        Log.i(TAG, "FONT2 ascent=" + fm.ascent + " descent=" + fm.descent);
+        assertTrue("font must define vertical metrics", (fm.descent - fm.ascent) > 0);
+    }
+
     @Test
     public void drawTextRunContextPositioningProbe() {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);

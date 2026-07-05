@@ -510,7 +510,25 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             }
             updateBackgroundColor();
 
-            final Typeface newTypeface = (fontFile.exists() && fontFile.length() > 0) ? Typeface.createFromFile(fontFile) : Typeface.MONOSPACE;
+            final Typeface newTypeface;
+            if (fontFile.exists() && fontFile.length() > 0) {
+                // A user-provided font at ~/.termux/font.ttf always takes precedence.
+                newTypeface = Typeface.createFromFile(fontFile);
+            } else {
+                // Default to the bundled Kawkab Mono (a true-monospace font that includes Arabic)
+                // instead of the system MONOSPACE. On some devices (e.g. MIUI) the system monospace
+                // font has no Arabic glyphs, so Arabic fell back to a proportional system font that
+                // rendered slanted / larger than the Latin cells. A bundled monospace Arabic font
+                // gives Arabic and Latin the same uniform advance on every device, and because the
+                // font is shipped with the app its metrics are device-independent.
+                Typeface bundled = Typeface.MONOSPACE;
+                try {
+                    bundled = Typeface.createFromAsset(mActivity.getAssets(), "font.ttf");
+                } catch (Exception fontError) {
+                    Logger.logStackTraceWithMessage(LOG_TAG, "Failed to load bundled font.ttf; using system monospace", fontError);
+                }
+                newTypeface = bundled;
+            }
             mActivity.getTerminalView().setTypeface(newTypeface);
         } catch (Exception e) {
             Logger.logStackTraceWithMessage(LOG_TAG, "Error in checkForFontAndColors()", e);
