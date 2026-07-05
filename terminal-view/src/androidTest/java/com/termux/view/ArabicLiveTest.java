@@ -316,6 +316,52 @@ public class ArabicLiveTest {
             + " highlightAdds=" + highlightAdds(e, r, word, Math.min(a, b), Math.max(a, b)));
     }
 
+    private Bitmap renderMulti(TerminalEmulator e, TerminalRenderer r, int selY1, int selY2, int selX1, int selX2) {
+        int cols = e.mColumns, rows = e.mRows;
+        Bitmap bmp = Bitmap.createBitmap(Math.max(1, (int) Math.ceil(r.getFontWidth() * cols) + 4),
+            Math.max(1, r.getFontLineSpacing() * rows + 8), Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        c.drawColor(Color.BLACK);
+        r.render(e, c, 0, selY1, selY2, selX1, selX2);
+        return bmp;
+    }
+
+    // bright pixels within the exact vertical band of screen row `rowIndex`.
+    private long brightInRow(Bitmap b, TerminalRenderer r, int rowIndex, int cols) {
+        int ls = r.getFontLineSpacing();
+        int y0 = r.mFontLineSpacingAndAscent + ls * rowIndex;
+        int y1 = r.mFontLineSpacingAndAscent + ls * (rowIndex + 1);
+        int xEnd = (int) (cols * r.getFontWidth());
+        long bright = 0;
+        for (int y = Math.max(0, y0); y < Math.min(b.getHeight(), y1); y++)
+            for (int x = 0; x < Math.min(xEnd, b.getWidth()); x++)
+                if ((b.getPixel(x, y) & 0xFF) > 128) bright++;
+        return bright;
+    }
+
+    // ISSUE 1 evidence: in a multi-line selection, a middle/last row gets selx1==-1 from render().
+    // renderNormalLine treats that as "from column 0" (column>=-1), but renderBidiLine's
+    // cellInsideSelection has a `selx1 >= 0` guard, so an ARABIC middle/last row shows NO highlight
+    // while LTR rows highlight. This reproduces the device report.
+    @Test
+    public void multiLineSelectionArabicRowLosesHighlight() {
+        TerminalRenderer r = new TerminalRenderer(40, Typeface.MONOSPACE);
+        String content = "abcde\r\n\u0645\u0631\u062D\u0628\u0627\r\nvwxyz"; // row0 latin, row1 ARABIC, row2 latin
+        Bitmap sel = renderMulti(emu(20, 4, content), r, 0, 2, 0, 4); // select all three rows
+        Bitmap no = renderScreen(emu(20, 4, content), r);
+        long add0 = brightInRow(sel, r, 0, 20) - brightInRow(no, r, 0, 20); // latin first row
+        long add1 = brightInRow(sel, r, 1, 20) - brightInRow(no, r, 1, 20); // ARABIC middle row
+        long add2 = brightInRow(sel, r, 2, 20) - brightInRow(no, r, 2, 20); // latin last row
+        Log.i(TAG, "MULTILINE highlightAdds row0(latin)=" + add0 + " row1(ARABIC)=" + add1 + " row2(latin)=" + add2);
+        // Control: same layout but middle row is LATIN -> should highlight like the others.
+        String control = "abcde\r\nfghij\r\nvwxyz";
+        Bitmap selC = renderMulti(emu(20, 4, control), r, 0, 2, 0, 4);
+        Bitmap noC = renderScreen(emu(20, 4, control), r);
+        long addCtrlMid = brightInRow(selC, r, 1, 20) - brightInRow(noC, r, 1, 20);
+        Log.i(TAG, "MULTILINE control latin-middle-row highlightAdds=" + addCtrlMid);
+        Log.i(TAG, "MULTILINE VERDICT arabic-middle-row-broken=" + (add1 < add0 / 4 && add1 < addCtrlMid / 4));
+    }
+
     // Confirms the fix: an inverted (descending) selection range - as produced by an RTL drag -
     // still highlights the full word because render() normalizes it.
     @Test
