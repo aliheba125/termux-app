@@ -95,6 +95,12 @@ public final class TerminalRenderer {
             if (row >= selectionY1 && row <= selectionY2) {
                 if (row == selectionY1) selx1 = selectionX1;
                 selx2 = (row == selectionY2) ? selectionX2 : mEmulator.mColumns;
+                // Normalize the selection columns: on RTL lines a drag can produce a descending
+                // logical range (start column > end column). Without this the selection would appear
+                // to vanish on Arabic/Hebrew text even though it is active.
+                if (selx1 >= 0 && selx2 >= 0 && selx1 > selx2) {
+                    int tmp = selx1; selx1 = selx2; selx2 = tmp;
+                }
             }
 
             TerminalRow lineObject = screen.allocateFullLineIfNecessary(screen.externalToInternalRow(row));
