@@ -91,6 +91,107 @@ public class ArabicLiveTest {
         return new int[]{gaps, inkCols, first, last};
     }
 
+    private void renderInto(Bitmap bmp, TerminalEmulator e, TerminalRenderer r) {
+        Canvas c = new Canvas(bmp);
+        c.drawColor(Color.BLACK);
+        r.render(e, c, 0, -1, -1, -1, -1);
+    }
+
+    // ===================== SECOND-AUDIT STRESS / EDGE-CASE / STABILITY TESTS =====================
+
+    // Every tricky input must render WITHOUT throwing (any exception fails the test) - covers a 3rd
+    // RTL script (Hebrew), emoji (surrogate width-2), CJK+Arabic, single char, lone control chars,
+    // all-whitespace/tabs, and a heavy mix. This is the "no silent crash on unseen scenario" check.
+    @Test
+    public void edgeCaseInputsRenderWithoutCrash() {
+        TerminalRenderer r = new TerminalRenderer(32, Typeface.MONOSPACE);
+        String[][] cases = {
+            {"hebrew", "\u05E9\u05DC\u05D5\u05DD \u05E2\u05D5\u05DC\u05DD"},           // שלום עולם
+            {"emoji_arabic", "\u0645\uD83D\uDE00\u0628"},                              // م😀ب (surrogate width2 between arabic)
+            {"cjk_arabic", "\u4E2D\u0645\u6587\u0628"},                               // 中م文ب
+            {"arabic_emoji_cjk_latin", "a\u06451\u0628\uD83D\uDE0E\u4E2D\u05E9z"},     // aم1ب😎中שz all-in-one
+            {"single_arabic", "\u0645"},
+            {"single_hebrew", "\u05E9"},
+            {"lone_combining", "\u0645\u064B\u064C\u064D\u0651\u0652"},                // meem + 5 tashkeel
+            {"max_combining", "\u0628\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B\u064B"}, // beh + 18 combining (exceeds MAX 15)
+            {"all_spaces", "        "},
+            {"tabs", "\tab\t\u0645\u0628"},
+            {"rtl_marks", "\u200F\u0645\u200E\u0628\u202Bx\u202C"},                    // RLM/LRM/RLE/PDF control marks + arabic
+            {"arabic_digits", "\u0661\u0662\u0663 \u0645\u0628 456"},                  // arabic-indic digits ١٢٣ + latin digits
+            {"empty", ""},
+        };
+        for (String[] cse : cases) {
+            try {
+                TerminalEmulator e = emu(30, 4, cse[1]);
+                Bitmap bmp = renderScreen(e, r);
+                // also exercise selection over the whole first row and a boundary selection
+                renderMulti(emu(30, 4, cse[1]), r, 0, 0, 0, 29);   // full first row selected
+                renderMulti(emu(30, 4, cse[1]), r, 0, 2, 5, 3);    // multi-row + inverted cols
+                Log.i(TAG, "EDGE '" + cse[0] + "' rendered OK");
+            } catch (Throwable t) {
+                Log.e(TAG, "EDGE '" + cse[0] + "' CRASHED: " + t, t);
+                throw new AssertionError("edge case '" + cse[0] + "' crashed: " + t, t);
+            }
+        }
+    }
+
+    // getLogicalColumn must never throw for ANY column index (including negative and >= columns) on
+    // tricky rows - it is called from touch hit-testing with arbitrary values.
+    @Test
+    public void getLogicalColumnNeverThrows() {
+        TerminalRenderer r = new TerminalRenderer(32, Typeface.MONOSPACE);
+        String[] rows = {"\u0645\u0631\u062D\u0628\u0627", "a\u0645\uD83D\uDE00\u4E2D\u05E9z", "\u0645", "", "     "};
+        for (String content : rows) {
+            TerminalEmulator e = emu(20, 3, content);
+            TerminalBuffer s = e.getScreen();
+            TerminalRow row = s.allocateFullLineIfNecessary(s.externalToInternalRow(0));
+            for (int v = -3; v <= 25; v++) {
+                int lc = r.getLogicalColumn(row, 20, v); // must not throw or return an OOB column
+                if (lc < -1 || lc > 20) throw new AssertionError("getLogicalColumn returned OOB " + lc + " for v=" + v);
+            }
+        }
+        Log.i(TAG, "getLogicalColumn never threw and stayed in range for all tricky rows/columns");
+    }
+
+    // Memory stability: render a full screen of Arabic 600 times into ONE reused bitmap (isolating the
+    // renderer's per-frame allocations from test bitmap churn). After GC, retained heap must not grow
+    // unboundedly (no leak). Quantifies the computeBidiLayout per-frame allocation concern.
+    @Test
+    public void memoryStableUnderRepeatedArabicRender() throws Exception {
+        TerminalRenderer r = new TerminalRenderer(28, Typeface.MONOSPACE);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 24; i++) sb.append("\u0645\u0631\u062D\u0628\u0627 \u0627\u0644\u0633\u0644\u0627\u0645 hello 123\r\n");
+        TerminalEmulator e = emu(80, 24, sb.toString());
+        Bitmap bmp = Bitmap.createBitmap((int) (r.getFontWidth() * 80) + 4, r.getFontLineSpacing() * 24 + 8, Bitmap.Config.ARGB_8888);
+        for (int i = 0; i < 30; i++) renderInto(bmp, e, r); // warmup
+        Runtime rt = Runtime.getRuntime();
+        System.gc(); Thread.sleep(150);
+        long before = rt.totalMemory() - rt.freeMemory();
+        long t0 = System.nanoTime();
+        for (int i = 0; i < 600; i++) renderInto(bmp, e, r);
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+        System.gc(); Thread.sleep(250);
+        long after = rt.totalMemory() - rt.freeMemory();
+        Log.i(TAG, "MEM/PERF 600 full-Arabic-screen renders: elapsed=" + elapsedMs + "ms avg="
+            + (elapsedMs / 600.0) + "ms/frame retainedDelta=" + (after - before) + " bytes");
+        assertTrue("no unbounded heap retention after GC (delta=" + (after - before) + ")", (after - before) < 8_000_000);
+    }
+
+    // ANR / O(n^2) guard: a very large paste of Arabic (wrapped across the screen) must render fast.
+    @Test
+    public void hugeArabicContentRendersFast() {
+        TerminalRenderer r = new TerminalRenderer(28, Typeface.MONOSPACE);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 8000; i++) sb.append("\u0645\u0631\u062D\u0628\u0627"); // 40k chars, wraps into many rows
+        TerminalEmulator e = emu(80, 40, sb.toString());
+        Bitmap bmp = Bitmap.createBitmap((int) (r.getFontWidth() * 80) + 4, r.getFontLineSpacing() * 40 + 8, Bitmap.Config.ARGB_8888);
+        long t0 = System.nanoTime();
+        renderInto(bmp, e, r);
+        long ms = (System.nanoTime() - t0) / 1_000_000;
+        Log.i(TAG, "HUGE 40k-char Arabic full 80x40 screen render = " + ms + "ms");
+        assertTrue("huge Arabic screen must render well under ANR threshold (" + ms + "ms)", ms < 800);
+    }
+
     private Bitmap renderScreen(TerminalEmulator e, TerminalRenderer r) {
         int cols = e.mColumns, rows = e.mRows;
         int W = Math.max(1, (int) Math.ceil(r.getFontWidth() * cols) + 4);
