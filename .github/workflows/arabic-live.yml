@@ -1,0 +1,55 @@
+name: arabic-live-emulator
+
+on:
+  push:
+    branches: [ 'verify/live-arabic' ]
+  workflow_dispatch:
+
+jobs:
+  instrumented:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run terminal-view instrumented tests on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: |
+            set +e
+            ./gradlew :terminal-view:connectedDebugAndroidTest --stacktrace
+            RC=$?
+            echo "=================== ARABIC_LIVE logcat ==================="
+            adb logcat -d -s ARABIC_LIVE:I | tee logcat_arabic.txt
+            echo "========================================================="
+            exit $RC
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arabic-live-results
+          path: |
+            terminal-view/build/reports/androidTests/
+            terminal-view/build/outputs/androidTest-results/
+            logcat_arabic.txt
+          if-no-files-found: warn
